@@ -11,7 +11,16 @@ dotenv.config();
 
 const app = express();
 const PORT = 3000;
-const TARGET_API = 'https://jsonplaceholder.typicode.com';
+
+// The Load Balancer Server Pool
+const BACKEND_SERVERS = [
+    'https://jsonplaceholder.typicode.com', // Pretend this is Server A in New York
+    'https://jsonplaceholder.typicode.com', // Pretend this is Server B in London
+    'https://jsonplaceholder.typicode.com'  // Pretend this is Server C in Tokyo
+]
+
+// A tracker to know whose turn is it next
+let currentServerIndex = 0;
 
 // 2. Initialize the Redis Client
 const redisClient = createClient({
@@ -111,26 +120,34 @@ app.get('/login', (req, res) => {
 });
 
 app.use('/api', verifyToken, apiLimiter, checkCache, createProxyMiddleware({
-    target: TARGET_API,
+    target: BACKEND_SERVERS[0], //Default fallback target
     changeOrigin: true,
     pathRewrite: { '^/api': '' },
-    selfHandleResponse: true, // Required to intercept the response
+    
+    // The Load Balancer Logic
+    router: (req) => {
+        // pick the current server
+        const target = BACKEND_SERVERS[currentServerIndex]
+
+        console.log(`LOAD BALANCER: Routing request to server ${currentServerIndex + 1}`);
+
+        currentServerIndex = (currentServerIndex + 1) % BACKEND_SERVERS.length;
+
+        return target;
+    },
+    selfHandleResponse: true,
     on: {
-        // Intercept the data coming back from JSONPlaceholder
-        proxyRes: responseInterceptor(async (responseBuffer, proxyRes, req, res) => {
+        proxyRes: responseInterceptor(async (responseBuffer, debugProxyErrorsPlugin, req, res) => {
             const data = responseBuffer.toString('utf8');
-            
-            // Only try to save if Redis is actually connected and the request was successful
             if (redisClient.isReady && res.statusCode === 200) {
                 try {
-                    // Save the data to Redis for 60 seconds
                     await redisClient.setEx(req.originalUrl, 60, data);
                     res.setHeader('X-Cache', 'MISS');
                 } catch (error) {
                     console.error('Cache save error:', error);
                 }
             }
-            return responseBuffer; // Send the data to the user
+            return responseBuffer;
         })
     },
     logger: console
@@ -139,5 +156,5 @@ app.use('/api', verifyToken, apiLimiter, checkCache, createProxyMiddleware({
 // 5. Start the server
 app.listen(PORT, () => {
     console.log(` API Gateway is live on http://localhost:${PORT}`);
-    console.log(` Proxying /api requests to ${TARGET_API}`);
+    console.log(` Proxying /api requests to ${BACKEND_SERVERS}`);
 });
