@@ -18,11 +18,13 @@
     "express": "^5.2.1",
     "express-rate-limit": "^8.3.2",
     "http-proxy-middleware": "^3.0.5",
+    "jsonwebtoken": "^9.0.3",
     "rate-limit-redis": "^4.3.1",
     "redis": "^5.11.0"
   },
   "devDependencies": {
     "@types/express": "^5.0.6",
+    "@types/jsonwebtoken": "^9.0.10",
     "@types/node": "^25.5.2",
     "ts-node": "^10.9.2",
     "typescript": "^6.0.2"

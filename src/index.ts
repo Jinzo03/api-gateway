@@ -4,6 +4,7 @@ import { createClient } from 'redis';
 import dotenv from 'dotenv';
 import rateLimit from 'express-rate-limit';
 import { RedisStore} from 'rate-limit-redis'
+import jwt from 'jsonwebtoken';
 
 // 1. Load the variables from the .env file
 dotenv.config();
@@ -51,6 +52,32 @@ const checkCache = async (req: express.Request, res: express.Response, next: exp
     }
 };
 
+// Authentication Middleware
+const verifyToken = (req: express.Request, res: express.Response, next: express.NextFunction) => {
+    // 1. Look for "Autherization" header
+    const authHeader = req.headers['authorization'];
+
+    // 2. The standard format is "Bearer <token>", so we split the string to just get the token
+    const token = authHeader && authHeader.split(' ')[1];
+
+    // 3. If there is no token at all, reject them immediately
+    if (!token) {
+        res.status(401).json({ error: ' Access Denied: No VIP wristband (token) provided!' });
+        return;
+    }
+
+    // 4. If they have a toke, check if it was signed by the secret
+    try {
+        // If this fails, it throws an error and jumps to the catch block
+        jwt.verify(token, process.env.JWT_SECRET as string);
+
+        console.log('Token valid! Letting user through.');
+        next(); // Send them to the rate limiter!
+    } catch (error) {
+        res.status(403).json({ error: 'Access Denied: Fake or expired wristband'})
+    }
+};
+
 // 4. The Proxy Middleware with Response Interceptor
 const apiLimiter = rateLimit({
     windowMs: 1 * 60 * 1000, // 1 minute window
@@ -70,7 +97,20 @@ const apiLimiter = rateLimit({
     }
 });
 
-app.use('/api',apiLimiter, checkCache, createProxyMiddleware({
+// A mock login route to generate a token
+app.get('/login', (req, res) => {
+    const mockUser = { id: 777, username: 'iyedd', role: 'admin' };
+
+    // Create the token, sign it with the secret , and make it expire in 1 hour
+    const token = jwt.sign(mockUser, process.env.JWT_SECRET as string, { expiresIn: '1h' });
+    
+    res.json({
+        message: "Here is your VIP wristband",
+        token: token
+    });
+});
+
+app.use('/api', verifyToken, apiLimiter, checkCache, createProxyMiddleware({
     target: TARGET_API,
     changeOrigin: true,
     pathRewrite: { '^/api': '' },
