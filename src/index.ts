@@ -5,6 +5,7 @@ import dotenv from 'dotenv';
 import rateLimit from 'express-rate-limit';
 import { RedisStore} from 'rate-limit-redis'
 import jwt from 'jsonwebtoken';
+import { parse } from 'node:path';
 
 // 1. Load the variables from the .env file
 dotenv.config();
@@ -75,7 +76,7 @@ const verifyToken = (req: express.Request, res: express.Response, next: express.
         return;
     }
 
-    // 4. If they have a toke, check if it was signed by the secret
+    // 4. If they have a token, check if it was signed by the secret
     try {
         // If this fails, it throws an error and jumps to the catch block
         jwt.verify(token, process.env.JWT_SECRET as string);
@@ -119,7 +120,57 @@ app.get('/login', (req, res) => {
     });
 });
 
-app.use('/api', verifyToken, apiLimiter, checkCache, createProxyMiddleware({
+// Telemetry & Analytics Wiretap
+const telemetry = (req: express.Request, res: express.Response, next: express.NextFunction) => {
+    // Start the stopwatch
+    const start = Date.now();
+
+    // Hook the 'finish' event '(which triggers right as the response is sent to the user)
+    res.on('finish', async () => {
+        const duration = Date.now() - start;
+        const status = res.statusCode;
+
+        console.log(`TELEMETRY: ${req.method} ${req.originalUrl} | Status: ${status} | Time: ${duration}ms`);
+
+        // Save the metrics to Redis using a Hash (a mini dictionary inside Redis)
+        if (redisClient.isReady) {
+            try  {
+                // Count the total number of requests
+                await redisClient.hIncrBy('api_metrics', 'total_requests', 1);
+                // Count how many times this specific status code (e.g., 200, 401, 429) happened
+                await redisClient.hIncrBy('api_metrics',`status_${status}`, 1);
+                // Add the duration to a running total so we can calculate the average later
+                await redisClient.hIncrBy('api_metrics', 'total_duration_ms', duration);  
+            } catch (error) {
+                console.error('Telemetry save error:', error);
+            }
+        }
+    });
+
+    next();
+};
+
+// The Analytics Dashboard Route
+app.get('/metrics', async (req,res) => {
+    if (!redisClient.isReady) {
+        res.status(500).json({ error: 'Database disconnected' });
+        return;
+    }
+
+    // Fetch all the stats from the Redis hash
+    const rawMetrics = await redisClient.hGetAll('api_metrics');
+
+    // Calculate the average response time
+    const totalRequests = parseInt(rawMetrics.total_requests || '0');
+    const totalDuration = parseInt(rawMetrics.total_duration_ms || '0');
+    const averageTime = totalRequests > 0 ? (totalDuration / totalRequests).toFixed(2) : 0;
+    res.json({
+        ...rawMetrics,
+        average_response_time_ms: `${averageTime}ms`
+    });
+});
+
+app.use('/api', telemetry, verifyToken, apiLimiter, checkCache, createProxyMiddleware({
     target: BACKEND_SERVERS[0], //Default fallback target
     changeOrigin: true,
     pathRewrite: { '^/api': '' },
