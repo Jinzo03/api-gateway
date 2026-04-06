@@ -1,0 +1,10 @@
+config:
+  target: "http://localhost:3000"
+  phases:
+    - duration: 10
+      arrivalRate: 20
+      name: "The Traffic Spike"
+scenarios:
+  - flow:
+    - get:
+        url: "/api/users"
