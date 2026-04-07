@@ -21,13 +21,18 @@ const baseLimiterConfig = {
     }
 };
 
-const rateLimitRedisClient = redisClient;
+export const createApiLimiter = () => {
+    if (!redisClient?.isReady) {
+        console.warn('Rate limiter is using in-memory storage because Redis is not ready.');
+        return rateLimit(baseLimiterConfig);
+    }
 
-export const apiLimiter = rateLimitRedisClient
-    ? rateLimit({
+    const readyRedisClient = redisClient;
+
+    return rateLimit({
         ...baseLimiterConfig,
         store: new RedisStore({
-            sendCommand: (...args: string[]) => rateLimitRedisClient.sendCommand(args)
+            sendCommand: (...args: string[]) => readyRedisClient.sendCommand(args)
         })
-    })
-    : rateLimit(baseLimiterConfig);
+    });
+};

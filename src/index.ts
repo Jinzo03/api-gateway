@@ -5,7 +5,7 @@ import { createProxyMiddleware, responseInterceptor } from 'http-proxy-middlewar
 import { initializeRedis, redisClient } from './config/redis.js';
 import { verifyToken } from './middlewares/auth.js';
 import { checkCache } from './middlewares/cache.js';
-import { apiLimiter } from './middlewares/rateLimiter.js';
+import { createApiLimiter } from './middlewares/rateLimiter.js';
 import { telemetry } from './middlewares/telemetry.js';
 import { authRoutes } from './routes/authRoutes.js';
 import { metricRoutes } from './routes/metricRoutes.js';
@@ -22,44 +22,50 @@ const BACKEND_SERVERS = [
 
 let currentServerIndex = 0;
 
-void initializeRedis();
+const bootstrap = async () => {
+    await initializeRedis();
 
-app.use(authRoutes);
-app.use(metricRoutes);
+    const apiLimiter = createApiLimiter();
 
-app.use('/api', telemetry, verifyToken, apiLimiter, checkCache, createProxyMiddleware({
-    target: BACKEND_SERVERS[0],
-    changeOrigin: true,
-    pathRewrite: { '^/api': '' },
-    router: () => {
-        const target = BACKEND_SERVERS[currentServerIndex];
+    app.use(authRoutes);
+    app.use(metricRoutes);
 
-        console.log(`LOAD BALANCER: Routing request to server ${currentServerIndex + 1}`);
-        currentServerIndex = (currentServerIndex + 1) % BACKEND_SERVERS.length;
+    app.use('/api', telemetry, verifyToken, apiLimiter, checkCache, createProxyMiddleware({
+        target: BACKEND_SERVERS[0],
+        changeOrigin: true,
+        pathRewrite: { '^/api': '' },
+        router: () => {
+            const target = BACKEND_SERVERS[currentServerIndex];
 
-        return target;
-    },
-    selfHandleResponse: true,
-    on: {
-        proxyRes: responseInterceptor(async (responseBuffer, proxyRes, req, res) => {
-            const data = responseBuffer.toString('utf8');
+            console.log(`LOAD BALANCER: Routing request to server ${currentServerIndex + 1}`);
+            currentServerIndex = (currentServerIndex + 1) % BACKEND_SERVERS.length;
 
-            if (redisClient?.isReady && res.statusCode === 200) {
-                try {
-                    await redisClient.setEx(req.originalUrl, 60, data);
-                    res.setHeader('X-Cache', 'MISS');
-                } catch (error) {
-                    console.error('Cache save error:', error);
+            return target;
+        },
+        selfHandleResponse: true,
+        on: {
+            proxyRes: responseInterceptor(async (responseBuffer, proxyRes, req, res) => {
+                const data = responseBuffer.toString('utf8');
+
+                if (redisClient?.isReady && res.statusCode === 200) {
+                    try {
+                        await redisClient.setEx(req.originalUrl, 60, data);
+                        res.setHeader('X-Cache', 'MISS');
+                    } catch (error) {
+                        console.error('Cache save error:', error);
+                    }
                 }
-            }
 
-            return responseBuffer;
-        })
-    },
-    logger: console
-}));
+                return responseBuffer;
+            })
+        },
+        logger: console
+    }));
 
-app.listen(PORT, () => {
-    console.log(`API Gateway is live on http://localhost:${PORT}`);
-    console.log(`Proxying /api requests to ${BACKEND_SERVERS.join(', ')}`);
-});
+    app.listen(PORT, () => {
+        console.log(`API Gateway is live on http://localhost:${PORT}`);
+        console.log(`Proxying /api requests to ${BACKEND_SERVERS.join(', ')}`);
+    });
+};
+
+void bootstrap();
